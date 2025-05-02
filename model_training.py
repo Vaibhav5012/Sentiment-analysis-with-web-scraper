@@ -20,11 +20,11 @@ class ReviewsDataset(Dataset):
     def __len__(self):
         return len(self.labels)
 
-def download_amazon_reviews_dataset():
-    """Download the Amazon reviews dataset from Kaggle"""
+def download_sarcasm_dataset():
+    """Download the sarcasm dataset from Kaggle"""
     try:
-        print("Downloading Amazon reviews dataset from Kaggle...")
-        path = kagglehub.dataset_download("datafiniti/consumer-reviews-of-amazon-products")
+        print("Downloading sarcasm dataset from Kaggle...")
+        path = kagglehub.dataset_download("danofer/sarcasm")
         print(f"Dataset downloaded to: {path}")
         return path
     except Exception as e:
@@ -34,85 +34,153 @@ def download_amazon_reviews_dataset():
 def prepare_dataset(dataset_path):
     """Prepare the dataset for fine-tuning"""
     # Find CSV files in the dataset directory
-    csv_files = [f for f in os.listdir(dataset_path) if f.endswith('.csv')]
+    csv_files = [f for f in os.listdir(dataset_path) if f.endswith('.csv') or f.endswith('.json')]
     
     if not csv_files:
-        print("No CSV files found in the dataset")
+        print("No CSV or JSON files found in the dataset")
         return None
     
-    # Load the first CSV file with proper settings to avoid dtype warnings
-    print(f"Loading dataset from {os.path.join(dataset_path, csv_files[0])}")
-    df = pd.read_csv(os.path.join(dataset_path, csv_files[0]), low_memory=False)
+    # Load and combine data from all files
+    all_data = []
+    for file in csv_files:
+        file_path = os.path.join(dataset_path, file)
+        try:
+            if file.endswith('.csv'):
+                df = pd.read_csv(file_path)
+            else:  # JSON file
+                df = pd.read_json(file_path, lines=True)
+            
+            # Check if the dataset has the required columns
+            if 'headline' in df.columns or 'text' in df.columns or 'comment' in df.columns:
+                # For sarcasm dataset, we need to map the text and label columns
+                text_col = next((col for col in ['headline', 'text', 'comment'] if col in df.columns), None)
+                label_col = next((col for col in ['is_sarcastic', 'label', 'class'] if col in df.columns), None)
+                
+                if text_col and label_col:
+                    # Create a new dataframe with standardized column names
+                    processed_df = pd.DataFrame({
+                        'text': df[text_col],
+                        'label': df[label_col]
+                    })
+                    
+                    # Clean the text data - remove NaN values and convert to string
+                    processed_df = processed_df.dropna()
+                    processed_df['text'] = processed_df['text'].astype(str)
+                    
+                    all_data.append(processed_df)
+                    print(f"Loaded {len(processed_df)} records from {file}")
+                else:
+                    print(f"Required columns not found in {file}")
+            else:
+                print(f"Required columns not found in {file}")
+        except Exception as e:
+            print(f"Error loading {file}: {e}")
     
-    # Check if the required columns exist
-    if 'reviews.text' not in df.columns or 'reviews.rating' not in df.columns:
-        print("Required columns not found in the dataset")
+    if not all_data:
+        print("No valid data found in the dataset files")
         return None
     
-    # Extract reviews and ratings
-    reviews = df['reviews.text'].dropna().tolist()
-    ratings = df['reviews.rating'].dropna().tolist()
+    # Combine all dataframes
+    combined_df = pd.concat(all_data, ignore_index=True)
     
-    # Convert ratings to sentiment labels (1-3 as negative, 4-5 as positive)
-    labels = [0 if float(rating) < 4 else 1 for rating in ratings if pd.notna(rating)]
-    reviews = [review for review, rating in zip(reviews, ratings) if pd.notna(rating)]
+    # Map sarcastic (1) to negative sentiment and non-sarcastic (0) to positive sentiment
+    combined_df['sentiment'] = combined_df['label'].map({1: 0, 0: 1})  # 0=negative, 1=positive
     
-    # Ensure reviews and labels have the same length
-    min_len = min(len(reviews), len(labels))
-    reviews = reviews[:min_len]
-    labels = labels[:min_len]
+    # Limit dataset size to prevent memory issues
+    if len(combined_df) > 100000:
+        print(f"Limiting dataset from {len(combined_df)} to 100,000 records to prevent memory issues")
+        combined_df = combined_df.sample(100000, random_state=42)
     
-    print(f"Prepared dataset with {len(reviews)} reviews")
+    print(f"Total records after processing: {len(combined_df)}")
     
-    # Split the dataset
-    train_texts, val_texts, train_labels, val_labels = train_test_split(
-        reviews, labels, test_size=0.2, random_state=42
-    )
+    # Split into train and validation sets
+    train_df, val_df = train_test_split(combined_df, test_size=0.2, random_state=42)
     
-    return {
-        'train_texts': train_texts,
-        'val_texts': val_texts,
-        'train_labels': train_labels,
-        'val_labels': val_labels
-    }
+    return train_df, val_df
 
-def fine_tune_model(dataset, model_name="distilbert-base-uncased", output_dir="fine_tuned_model"):
-    """Fine-tune a pre-trained model on the Amazon reviews dataset"""
-    # Check for CUDA availability
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+def fine_tune_model():
+    """Fine-tune a pre-trained model on the sarcasm dataset"""
+    # Download the dataset
+    dataset_path = download_sarcasm_dataset()
+    if not dataset_path:
+        print("Failed to download dataset")
+        return
+    
+    # Prepare the dataset
+    data = prepare_dataset(dataset_path)
+    if not data:
+        print("Failed to prepare dataset")
+        return
+    
+    train_df, val_df = data
     
     # Load tokenizer and model
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=2)
-    model.to(device)
+    tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
+    model = AutoModelForSequenceClassification.from_pretrained("distilbert-base-uncased", num_labels=2)
     
-    # Tokenize the texts
-    print("Tokenizing texts...")
-    train_encodings = tokenizer(dataset['train_texts'], truncation=True, padding=True, max_length=512)
-    val_encodings = tokenizer(dataset['val_texts'], truncation=True, padding=True, max_length=512)
+    # Convert lists to clean strings and handle any potential None values
+    train_texts = [str(text) for text in train_df['text'].tolist()]
+    val_texts = [str(text) for text in val_df['text'].tolist()]
+    
+    print(f"Tokenizing {len(train_texts)} training examples...")
+    
+    # Use padding='max_length' to ensure all sequences have the same length
+    max_length = 128
+    
+    # Process in smaller batches to avoid memory issues
+    batch_size = 1000
+    train_encodings = {}
+    
+    for i in range(0, len(train_texts), batch_size):
+        print(f"Tokenizing batch {i//batch_size + 1}/{(len(train_texts) + batch_size - 1)//batch_size}")
+        batch_texts = train_texts[i:i+batch_size]
+        batch_encodings = tokenizer(
+            batch_texts, 
+            truncation=True, 
+            padding='max_length',  # Changed from 'padding=True' to ensure fixed length
+            max_length=max_length,
+            return_tensors=None  # Return lists, not tensors
+        )
+        
+        # Initialize train_encodings with the first batch
+        if not train_encodings:
+            train_encodings = {k: v for k, v in batch_encodings.items()}
+        else:
+            # Append subsequent batches
+            for key, value in batch_encodings.items():
+                train_encodings[key].extend(value)
+    
+    print(f"Tokenizing {len(val_texts)} validation examples...")
+    val_encodings = tokenizer(
+        val_texts, 
+        truncation=True, 
+        padding='max_length',  # Changed to ensure fixed length
+        max_length=max_length,
+        return_tensors=None  # Return lists, not tensors
+    )
     
     # Create datasets
-    train_dataset = ReviewsDataset(train_encodings, dataset['train_labels'])
-    val_dataset = ReviewsDataset(val_encodings, dataset['val_labels'])
+    train_dataset = ReviewsDataset(train_encodings, train_df['sentiment'].tolist())
+    val_dataset = ReviewsDataset(val_encodings, val_df['sentiment'].tolist())
     
-    # Define training arguments
+    # Define training arguments with reduced batch size and epochs
     training_args = TrainingArguments(
-        output_dir=output_dir,
-        num_train_epochs=3,
-        per_device_train_batch_size=8,
+        output_dir='./fine_tuned_model',
+        num_train_epochs=2,
+        per_device_train_batch_size=8,  # Reduced batch size to help with memory
         per_device_eval_batch_size=8,
         warmup_steps=500,
         weight_decay=0.01,
         logging_dir='./logs',
-        logging_steps=10,
-        eval_strategy="epoch",  # Updated from evaluation_strategy
-        save_strategy="epoch",
+        logging_steps=100,
+        evaluation_strategy="steps",
+        eval_steps=1000,
+        save_steps=1000,
         load_best_model_at_end=True,
-        no_cuda=not torch.cuda.is_available(),
+        fp16=False,  # Disable mixed precision to avoid potential issues
     )
     
-    # Create trainer
+    # Define trainer
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -121,42 +189,14 @@ def fine_tune_model(dataset, model_name="distilbert-base-uncased", output_dir="f
     )
     
     # Train the model
-    print("Starting training...")
+    print("Starting model fine-tuning...")
     trainer.train()
     
-    # Save the model and tokenizer
-    print(f"Saving model to {output_dir}")
-    model.save_pretrained(output_dir)
-    tokenizer.save_pretrained(output_dir)
-    
-    return output_dir
+    # Save the model
+    model_path = os.path.join(os.path.dirname(__file__), "fine_tuned_model")
+    model.save_pretrained(model_path)
+    tokenizer.save_pretrained(model_path)
+    print(f"Model saved to {model_path}")
 
-def run_fine_tuning():
-    """Main function to run the fine-tuning process"""
-    try:
-        # Download the dataset
-        dataset_path = download_amazon_reviews_dataset()
-        if not dataset_path:
-            return "Failed to download dataset"
-        
-        # Prepare the dataset
-        dataset = prepare_dataset(dataset_path)
-        if not dataset:
-            return "Failed to prepare dataset"
-        
-        # Fine-tune the model
-        output_dir = fine_tune_model(dataset)
-        
-        return f"Model fine-tuned and saved to {output_dir}"
-    except Exception as e:
-        import traceback
-        print(f"Error during fine-tuning: {str(e)}")
-        print(traceback.format_exc())
-        return f"Fine-tuning failed: {str(e)}"
-
-# Add this to make the script executable
 if __name__ == "__main__":
-    print("Starting model fine-tuning process...")
-    result = run_fine_tuning()
-    print(result)
-    print("Fine-tuning complete. The model is now ready to use in your application.")
+    fine_tune_model()
