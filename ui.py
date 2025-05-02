@@ -2,20 +2,18 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from wordcloud import WordCloud, STOPWORDS
 import textwrap
-import io
 import os
 import sys
 from datetime import datetime
 from PyQt5.QtWidgets import (QMainWindow, QVBoxLayout, QHBoxLayout, 
                             QPushButton, QLabel, QFileDialog, QMessageBox, 
                             QInputDialog, QWidget, QProgressDialog, QLineEdit, QFrame, 
-                            QTabWidget, QTextEdit, QFileDialog, 
-                            QVBoxLayout, QHBoxLayout, QPushButton, QLabel)
+                            QTabWidget, QTextEdit)
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont, QPixmap
-from models import SummarizerThread, QAThread
+from models import SummarizerThread
 from scraper import ScraperThread
-from utils import clean_csv_data, summarize_sentiment_results
+from utils import clean_csv_data
 
 class SentimentAnalysisApp(QMainWindow):
     def __init__(self):
@@ -85,13 +83,9 @@ class SentimentAnalysisApp(QMainWindow):
         
         self.load_button = QPushButton("Load CSV")
         self.load_button.clicked.connect(self.load_csv)
-        self.clean_button = QPushButton("Clean CSV")
-        self.clean_button.clicked.connect(self.clean_loaded_csv)
-        self.clean_button.setEnabled(False)
         
         action_layout.addWidget(self.scrape_button)
         action_layout.addWidget(self.load_button)
-        action_layout.addWidget(self.clean_button)
         main_layout.addLayout(action_layout)
         
         # Add a separator line
@@ -117,13 +111,8 @@ class SentimentAnalysisApp(QMainWindow):
         self.wordcloud_button.clicked.connect(self.generate_wordcloud)
         self.wordcloud_button.setEnabled(False)
         
-        self.summary_button = QPushButton("Sentiment Summary")
-        self.summary_button.clicked.connect(self.show_sentiment_summary)
-        self.summary_button.setEnabled(False)
-        
         analysis_row1.addWidget(self.sentiment_button)
         analysis_row1.addWidget(self.wordcloud_button)
-        analysis_row1.addWidget(self.summary_button)
         main_layout.addLayout(analysis_row1)
         
         # Second row of analysis buttons
@@ -133,12 +122,7 @@ class SentimentAnalysisApp(QMainWindow):
         self.summarize_button.clicked.connect(self.summarize_reviews)
         self.summarize_button.setEnabled(False)
         
-        self.ask_button = QPushButton("Ask Questions")
-        self.ask_button.clicked.connect(self.ask_questions)
-        self.ask_button.setEnabled(False)
-        
         analysis_row2.addWidget(self.summarize_button)
-        analysis_row2.addWidget(self.ask_button)
         main_layout.addLayout(analysis_row2)
         
         # Export button
@@ -162,26 +146,44 @@ class SentimentAnalysisApp(QMainWindow):
         main_layout.addStretch()
 
     def scrape_website(self):
+        """Start scraping the website for reviews"""
         url = self.url_input.text().strip()
+        
         if not url:
             QMessageBox.warning(self, "Input Error", "Please enter a valid URL")
             return
             
-        # Disable buttons during scraping
-        self.scrape_button.setEnabled(False)
-        self.load_button.setEnabled(False)
-        self.status_label.setText("Scraping website... Please wait.")
-        
-        # Create and start the scraper thread
+        # Create and configure the scraper thread
         self.scraper_thread = ScraperThread(url)
+        
+        # Connect signals properly
         self.scraper_thread.progress_signal.connect(self.update_progress)
         self.scraper_thread.finished_signal.connect(self.process_scraped_data)
         self.scraper_thread.error_signal.connect(self.handle_scraper_error)
+        
+        # Show progress dialog
+        self.progress_dialog = QProgressDialog("Scraping website...", "Cancel", 0, 0, self)
+        self.progress_dialog.setWindowTitle("Scraping")
+        self.progress_dialog.setWindowModality(Qt.WindowModal)
+        self.progress_dialog.setMinimumDuration(0)
+        self.progress_dialog.canceled.connect(self.cancel_scraping)  # Make sure this connection is here
+        self.progress_dialog.show()
+        
+        # Start the scraper thread
         self.scraper_thread.start()
         
     def update_progress(self, message):
         self.status_label.setText(message)
         
+    def cancel_scraping(self):
+        """Cancel the scraping operation if it's running"""
+        if hasattr(self, 'scraper_thread') and self.scraper_thread.isRunning():
+            self.scraper_thread.terminate()
+            self.scraper_thread.wait()
+            self.status_label.setText("Scraping canceled")
+            self.scrape_button.setEnabled(True)
+            self.load_button.setEnabled(True)
+    
     def process_scraped_data(self, data):
         self.data = data
         self.df = pd.DataFrame(data, columns=["text", "sentiment", "source", "date", "user_id", "location", "confidence"])
@@ -200,9 +202,7 @@ class SentimentAnalysisApp(QMainWindow):
         self.sentiment_button.setEnabled(True)
         self.wordcloud_button.setEnabled(True)
         self.summarize_button.setEnabled(True)
-        self.ask_button.setEnabled(True)
         self.export_button.setEnabled(True)
-        self.clean_button.setEnabled(True)
         
         # Update status
         review_count = len(self.df)
@@ -248,9 +248,8 @@ class SentimentAnalysisApp(QMainWindow):
         self.sentiment_button.setEnabled(has_data)
         self.wordcloud_button.setEnabled(has_data)
         self.summarize_button.setEnabled(has_data)
-        self.ask_button.setEnabled(has_data)
         self.export_button.setEnabled(has_data)
-    
+        
         QMessageBox.information(self, "CSV Cleaned", f"Successfully cleaned CSV file. Removed {removed_count} non-review entries.")
     
     def load_csv(self):
@@ -287,9 +286,7 @@ class SentimentAnalysisApp(QMainWindow):
             self.sentiment_button.setEnabled(True)
             self.wordcloud_button.setEnabled(True)
             self.summarize_button.setEnabled(True)
-            self.ask_button.setEnabled(True)
             self.export_button.setEnabled(True)
-            self.clean_button.setEnabled(True)
             
             # Update status
             review_count = len(self.df)
@@ -533,71 +530,3 @@ class SentimentAnalysisApp(QMainWindow):
     def handle_summary_error(self, error_message):
         self.progress_dialog.close()
         QMessageBox.critical(self, "Error", f"Failed to generate summary: {error_message}")
-
-    def ask_questions(self):
-        if self.df is None or len(self.df) == 0:
-            QMessageBox.warning(self, "No Data", "No data available for questions")
-            return
-    
-        # Ask user for their question
-        question, ok = QInputDialog.getText(self, "Ask a Question", 
-                                      "What would you like to know about these reviews?")
-        if not ok or not question:
-            return
-    
-        # Combine all reviews into a single context
-        context = " ".join(self.df["text"].tolist())
-    
-        # Show loading dialog
-        self.qa_progress_dialog = QProgressDialog("Finding answer...", "Cancel", 0, 100, self)
-        self.qa_progress_dialog.setWindowTitle("Processing Question")
-        self.qa_progress_dialog.setWindowModality(Qt.WindowModal)
-        self.qa_progress_dialog.setValue(10)
-        self.qa_progress_dialog.canceled.connect(self.cancel_qa)
-    
-        # Create and start the QA thread
-        self.qa_thread = QAThread(question, context)
-        self.qa_thread.progress_signal.connect(self.qa_progress_dialog.setValue)
-        self.qa_thread.finished_signal.connect(self.handle_qa_result)
-        self.qa_thread.error_signal.connect(self.handle_qa_error)
-        self.qa_thread.start()
-    
-        # Store the question for later use
-        self.current_question = question
-
-    def cancel_qa(self):
-        if hasattr(self, 'qa_thread') and self.qa_thread.isRunning():
-            self.qa_thread.terminate()
-            self.qa_thread.wait()
-
-    def handle_qa_result(self, answer):
-        # Format answer
-        formatted_answer = textwrap.fill(answer['answer'], width=80)
-        confidence = answer['score'] * 100
-    
-        self.qa_progress_dialog.setValue(100)
-    
-        # Show answer in message box
-        QMessageBox.information(self, "Answer", 
-                          f"Question: {self.current_question}\n\n"
-                          f"Answer: {formatted_answer}\n\n"
-                          f"Confidence: {confidence:.2f}%")
-
-    def handle_qa_error(self, error_message):
-        self.qa_progress_dialog.close()
-        QMessageBox.critical(self, "Error", f"Failed to process question: {error_message}")
-
-    def export_results(self):
-        if self.df is None or len(self.df) == 0:
-            QMessageBox.warning(self, "No Data", "No data available to export")
-            return
-            
-        file_path, _ = QFileDialog.getSaveFileName(self, "Save Results", "", "CSV Files (*.csv)")
-        if not file_path:
-            return
-            
-        try:
-            self.df.to_csv(file_path, index=False)
-            QMessageBox.information(self, "Export Complete", f"Results exported to {file_path}")
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to export results: {str(e)}")
