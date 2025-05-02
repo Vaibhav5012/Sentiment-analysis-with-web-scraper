@@ -1,15 +1,20 @@
 import time
 import threading
+import random
+from datetime import datetime  # Add this import
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from PyQt5.QtCore import QThread, pyqtSignal
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from utils import process_review_batch, is_non_review_content, thread_local
 
 class ScraperThread(QThread):
+    # Define signals at the class level
     progress_signal = pyqtSignal(str)
     finished_signal = pyqtSignal(list)
     error_signal = pyqtSignal(str)
@@ -17,8 +22,11 @@ class ScraperThread(QThread):
     def __init__(self, url):
         super().__init__()
         self.url = url
-        self.driver = None 
+        self.driver = None
+        self.scroll_pause_time = 2.0  # Time to pause between scrolls
+        self.max_scrolls = 15  # Maximum number of scrolls to perform
         
+    
     def run(self):
         try:
             # Setup Chrome options
@@ -42,8 +50,8 @@ class ScraperThread(QThread):
             chrome_options.add_argument("--disable-d3d11")  # Disable Direct3D 11
             chrome_options.add_argument("--disable-webrtc-hw-encoding")  # Disable WebRTC hardware encoding
             
-            # Add user agent to appear more like a real browser
-            chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+            # Add user agent to appear more like a real browser - use a more modern user agent
+            chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36")
             
             # Initialize the driver
             self.progress_signal.emit("Initializing web driver...")
@@ -51,87 +59,82 @@ class ScraperThread(QThread):
             # Use standard ChromeDriverManager without cache_valid_range parameter
             self.driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
             
-            # Set window size explicitly to ensure consistent rendering
-            self.driver.set_window_size(1366, 768)
+            # Set window size explicitly to ensure consistent rendering - use a larger size
+            self.driver.set_window_size(1920, 1080)
 
             # Navigate to the URL
             self.driver.get(self.url)
-            self.progress_signal.emit("Extracting review content...")
+            self.progress_signal.emit("Waiting for page to load...")
             # Wait for page to load - increase initial wait time
             time.sleep(5)
             
-            # Try to accept cookies if present (common blocker for scraping)
+            # Try to accept cookies if present (common blocker for scraping) - enhanced with more patterns
             try:
-                cookie_buttons = self.driver.find_elements(By.XPATH, 
-                    "//*[contains(text(), 'Accept') or contains(text(), 'I agree') or contains(text(), 'Allow') or contains(text(), 'Got it') or contains(text(), 'OK')]")
-                for button in cookie_buttons:
-                    if button.is_displayed():
-                        self.driver.execute_script("arguments[0].click();", button)
-                        time.sleep(2)
+                # More comprehensive list of cookie acceptance patterns
+                cookie_selectors = [
+                    "//*[contains(text(), 'Accept') or contains(text(), 'I agree') or contains(text(), 'Allow') or contains(text(), 'Got it') or contains(text(), 'OK')]",
+                    "//button[contains(@id, 'cookie') or contains(@class, 'cookie')]",
+                    "//a[contains(@id, 'cookie') or contains(@class, 'cookie')]",
+                    "//div[contains(@id, 'consent') or contains(@class, 'consent')]//button",
+                    "//div[contains(@id, 'gdpr') or contains(@class, 'gdpr')]//button",
+                    "//div[contains(@id, 'privacy') or contains(@class, 'privacy')]//button",
+                    "//button[contains(@id, 'accept') or contains(@class, 'accept')]",
+                    "//button[contains(@id, 'agree') or contains(@class, 'agree')]"
+                ]
+                
+                for selector in cookie_selectors:
+                    try:
+                        cookie_buttons = self.driver.find_elements(By.XPATH, selector)
+                        for button in cookie_buttons:
+                            if button.is_displayed():
+                                self.driver.execute_script("arguments[0].click();", button)
+                                time.sleep(2)
+                                self.progress_signal.emit("Accepted cookies/consent dialog")
+                                break
+                    except:
+                        continue
             except Exception as e:
                 print(f"Cookie button error: {e}")  # Log but continue
                 
-            # Enhanced auto-scroll implementation
-            scroll_pause_time = 2.5  # Increased pause time
-            max_scrolls = 15  # Reduced for reliability
-            
-            # Show progress
+            # Enhanced auto-scroll implementation with random pauses
             self.progress_signal.emit("Starting to scroll and collect reviews...")
             
             # Scroll to load all content
+            # Remove the nested function definition and use the class method instead
+            self.progress_signal.emit("Scrolling to load content...")
+            
             last_height = self.driver.execute_script("return document.body.scrollHeight")
             scroll_count = 0
+            max_scrolls = 15  # Limit scrolling to prevent infinite loops
             
             while scroll_count < max_scrolls:
-                # Scroll down
+                # Scroll down to the bottom
                 self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
                 
-                # Wait for new content
-                time.sleep(scroll_pause_time)
+                # Wait for new content to load
+                time.sleep(self.scroll_pause_time)
                 
                 # Calculate new scroll height and compare with last scroll height
                 new_height = self.driver.execute_script("return document.body.scrollHeight")
+                
+                # If heights are the same, content might be fully loaded
                 if new_height == last_height:
-                    # Try to click "load more" or "show more" buttons if scrolling doesn't reveal new content
-                    try:
-                        more_buttons = self.driver.find_elements(By.XPATH, 
-                            "//*[contains(text(), 'Show More') or contains(text(), 'Load More') or contains(text(), 'More Reviews') or contains(text(), 'View More')]")
-                        clicked = False
-                        for button in more_buttons:
-                            if button.is_displayed():
-                                self.driver.execute_script("arguments[0].click();", button)
-                                time.sleep(3)
-                                clicked = True
-                                break
-                                
-                        # If we didn't click any buttons, try again with different selectors
-                        if not clicked:
-                            more_buttons = self.driver.find_elements(By.CSS_SELECTOR, 
-                                "button[class*='more'], button[class*='load'], a[class*='more'], a[class*='load']")
-                            for button in more_buttons:
-                                if button.is_displayed():
-                                    self.driver.execute_script("arguments[0].click();", button)
-                                    time.sleep(3)
-                                    break
-                    except Exception as e:
-                        print(f"Load more button error: {e}")  # Log but continue
-                        
-                    # If we've tried clicking buttons and height still doesn't change, we're at the end
-                    new_height = self.driver.execute_script("return document.body.scrollHeight")
-                    if new_height == last_height:
-                        # Try one more scroll just to be sure
-                        self.driver.execute_script("window.scrollTo(0, 0);")  # Scroll to top
-                        time.sleep(1)
-                        self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")  # Scroll to bottom
-                        time.sleep(2)
-                        new_height = self.driver.execute_script("return document.body.scrollHeight")
-                        if new_height == last_height:
-                            break
+                    # Try one more scroll with longer wait time
+                    self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                    time.sleep(self.scroll_pause_time * 2)
+                    
+                    # Check again
+                    final_height = self.driver.execute_script("return document.body.scrollHeight")
+                    if final_height == new_height:
+                        # No more new content
+                        break
                 
                 last_height = new_height
                 scroll_count += 1
-                self.progress_signal.emit(f"Scrolling page... ({scroll_count}/{max_scrolls})")
-        
+                self.progress_signal.emit(f"Scrolling page ({scroll_count}/{max_scrolls})...")
+                
+            self.progress_signal.emit(f"Completed {scroll_count} scrolls")
+            
             # Expand review text if possible - try multiple patterns for "Read More" buttons
             try:
                 self.progress_signal.emit("Expanding review texts...")
@@ -140,9 +143,13 @@ class ScraperThread(QThread):
                     "//*[contains(text(), '... More')]",
                     "//*[contains(text(), 'Show Full Review')]",
                     "//*[contains(text(), 'See More')]",
+                    "//*[contains(text(), 'Continue Reading')]",
+                    "//*[contains(text(), 'Expand Review')]",
                     "//*[contains(@class, 'expand')]",
                     "//*[contains(@class, 'more')]",
-                    "//button[contains(@aria-label, 'expand')]"
+                    "//button[contains(@aria-label, 'expand')]",
+                    "//a[contains(@class, 'read-more')]",
+                    "//span[contains(@class, 'read-more')]"
                 ]
                 
                 for pattern in expand_patterns:
@@ -150,6 +157,9 @@ class ScraperThread(QThread):
                     for button in expand_buttons:
                         if button.is_displayed():
                             try:
+                                # Scroll to the button first
+                                self.driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", button)
+                                time.sleep(0.5)
                                 self.driver.execute_script("arguments[0].click();", button)
                                 time.sleep(0.5)
                             except:
@@ -170,7 +180,11 @@ class ScraperThread(QThread):
                 "div[itemprop='review']", "div[data-hook='review']",
                 "li[class*='review']", "article[class*='review']",
                 ".review-card", ".review-container", ".review-wrapper",
-                "[data-testid*='review']", "[data-test*='review']"
+                "[data-testid*='review']", "[data-test*='review']",
+                "div.review-content", "div.review-text", "div.review-body",
+                "div[class*='reviewText']", "div[class*='reviewContent']",
+                "div[class*='reviewBody']", "div[class*='review-text']",
+                "div[class*='review-content']", "div[class*='review-body']"
             ]
             
             for selector in container_selectors:
@@ -184,7 +198,7 @@ class ScraperThread(QThread):
                             reviews.add(text)
             
             # If we didn't find enough reviews with containers, try direct text extraction
-            if len(reviews) < 5:
+            if len(reviews) < 10:
                 self.progress_signal.emit("Trying direct text extraction...")
                 
                 # Comprehensive list of selectors for review content
@@ -195,7 +209,12 @@ class ScraperThread(QThread):
                     'p[class*="comment-content"], div[class*="commentContent"]',
                     'div[class*="userReview"], div[class*="user-review"]',
                     '.review-content p, .review-body p, .comment-body p',
-                    'article p, .review p, .comment p'
+                    'article p, .review p, .comment p',
+                    'div[class*="comment"] p, div[class*="review"] p',
+                    'div[class*="feedback"] p, div[class*="testimonial"] p',
+                    'div[itemprop="reviewBody"], span[itemprop="reviewBody"]',
+                    'div[class*="text-content"], div[class*="textContent"]',
+                    'div[class*="description"], div[class*="content"]'
                 ]
                 
                 for selector in review_selectors:
@@ -209,135 +228,188 @@ class ScraperThread(QThread):
                                 if not is_non_review_content(cleaned_text):
                                     reviews.add(cleaned_text)
             
-            # If still not enough reviews, try a more aggressive approach with XPath
-            if len(reviews) < 5:
-                self.progress_signal.emit("Trying XPath extraction...")
+            # Move this outside the if block so it always runs
+            # Add this code to process the reviews after extraction
+            if len(reviews) > 0:
+                self.progress_signal.emit(f"Found {len(reviews)} reviews, processing...")
+                # Try alternative extraction if we found very few reviews
+                if len(reviews) < 5:
+                    self.progress_signal.emit("Found few reviews, trying alternative methods...")
+                    alternative_reviews = self.extract_reviews_alternative()
+                    reviews.update(alternative_reviews)
+                    self.progress_signal.emit(f"Total reviews after alternative methods: {len(reviews)}")
                 
-                # Try to find paragraphs with substantial text
-                paragraphs = self.driver.find_elements(By.XPATH, "//p[string-length() > 50]")
-                for p in paragraphs:
-                    text = p.text.strip()
-                    if len(text) > 30:
-                        cleaned_text = ' '.join(text.split())
-                        if not is_non_review_content(cleaned_text):
-                            reviews.add(cleaned_text)
-                
-                # Try to find divs with substantial text that might be reviews
-                divs = self.driver.find_elements(By.XPATH, "//div[string-length() > 100 and not(.//div)]")
-                for div in divs:
-                    text = div.text.strip()
-                    if 50 < len(text) < 2000:  # Reasonable review length
-                        cleaned_text = ' '.join(text.split())
-                        if not is_non_review_content(cleaned_text):
-                            reviews.add(cleaned_text)
-            
-            # Last resort: take a screenshot for debugging
-            if len(reviews) < 5:
-                self.progress_signal.emit("Taking screenshot for debugging...")
-                try:
-                    self.driver.save_screenshot("scraping_debug.png")
-                    print("Screenshot saved as scraping_debug.png")
-                except Exception as e:
-                    print(f"Screenshot error: {e}")
-                    
-                # Try to get the entire page HTML
-                page_source = self.driver.page_source
-                with open("page_source.html", "w", encoding="utf-8") as f:
-                    f.write(page_source)
-                print("Page source saved as page_source.html")
-                
-                # Try one more extraction from the entire body
-                body_text = self.driver.find_element(By.TAG_NAME, "body").text
-                paragraphs = body_text.split('\n')
-                for p in paragraphs:
-                    if 50 < len(p) < 1000:  # Reasonable paragraph length
-                        cleaned_text = ' '.join(p.split())
-                        if not is_non_review_content(cleaned_text):
-                            reviews.add(cleaned_text)
-                    
-            # Process reviews in parallel
-            self.progress_signal.emit(f"Analyzing {len(reviews)} reviews...")
-            data = []
-            
-            # Check if we have any reviews to process
-            if not reviews:
-                self.error_signal.emit("No valid review data found on the page. Try a different URL or adjust the scraping settings.")
-                if self.driver:
-                    self.driver.quit()
-                    self.driver = None
-                return
-                
-            batch_size = 7  # Adjust based on your needs
-            review_batches = [list(reviews)[i:i + batch_size] for i in range(0, len(reviews), batch_size)]
-            
-            # Initialize thread-local storage before processing
-            thread_local.seen_texts = set()
-            
-            # Ensure max_workers is at least 1
-            max_workers = max(1, min(len(review_batches), 4))
-            
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_batch = {executor.submit(process_review_batch, batch): batch 
-                                for batch in review_batches}
-                
-                completed = 0
-                for future in as_completed(future_to_batch):
-                    try:
-                        batch_results = future.result()
-                        data.extend(batch_results)
-                        completed += 1
-                        self.progress_signal.emit(f"Processed {completed}/{len(review_batches)} batches...")
-                    except Exception as e:
-                        print(f"Batch processing failed: {e}")
-
-            # Clean up
-            self.driver.quit()
-            self.driver = None
-            
-            if data:
-                self.finished_signal.emit(data)
+                # Process the reviews
+                self.process_reviews(reviews)
             else:
-                self.error_signal.emit("No valid review data found on the page!")
-                
+                self.progress_signal.emit("No reviews found, trying alternative extraction...")
+                alternative_reviews = self.extract_reviews_alternative()
+                if len(alternative_reviews) > 0:
+                    self.progress_signal.emit(f"Found {len(alternative_reviews)} reviews with alternative methods")
+                    self.process_reviews(alternative_reviews)
+                else:
+                    self.error_signal.emit("No reviews found on this page. Try a different URL.")
+                    if self.driver:
+                        self.driver.quit()
+                        self.driver = None
+                            
         except Exception as e:
             self.error_signal.emit(f"Failed to scrape URL: {str(e)}")
             if self.driver:
                 self.driver.quit()
                 self.driver = None
-
-
-# Add this function to your scraper.py file
-
-def run_standalone_scraper(url):
-    """Run the scraper directly from command line with enhanced settings"""
-    import pandas as pd
-    from datetime import datetime
-    
-    print(f"Scraping reviews from: {url}")
-    
-    # Create a scraper with more aggressive settings
-    scraper = ScraperThread(url)
-    
-    # Override default settings for more thorough scraping
-    scraper.max_pages = 10  # Increase from default
-    scraper.scroll_pause_time = 2.0  # Slow down scrolling
-    scraper.max_retries = 5  # More retries
-    
-    # Run the scraper synchronously
-    try:
-        print("Starting scraper with enhanced settings...")
-        data = scraper.run_scraper()
         
-        # Save results to CSV
-        if data and len(data) > 0:
-            df = pd.DataFrame(data, columns=["text", "sentiment", "source", "date", "user_id", "location", "confidence"])
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_file = f"scraped_reviews_{timestamp}.csv"
-            df.to_csv(output_file, index=False)
-            print(f"Successfully scraped {len(data)} reviews. Saved to {output_file}")
+    def go_to_next_page(self):
+            """Try to navigate to the next page of reviews"""
+            try:
+                # Common patterns for next page buttons
+                next_page_selectors = [
+                    "//a[contains(text(), 'Next')]",
+                    "//button[contains(text(), 'Next')]",
+                    "//a[contains(@class, 'next')]",
+                    "//button[contains(@class, 'next')]",
+                    "//a[contains(@aria-label, 'Next')]",
+                    "//button[contains(@aria-label, 'Next')]",
+                    "//a[contains(@rel, 'next')]",
+                    "//li[contains(@class, 'next')]/a",
+                    "//div[contains(@class, 'pagination')]//a[contains(@class, 'next')]",
+                    "//div[contains(@class, 'pagination')]//button[contains(@class, 'next')]",
+                    "//a[.//i[contains(@class, 'arrow') or contains(@class, 'next')]]",
+                    "//button[.//i[contains(@class, 'arrow') or contains(@class, 'next')]]",
+                    "//a[contains(@class, 'pagination-next')]",
+                    "//button[contains(@class, 'pagination-next')]"
+                ]
+                
+                for selector in next_page_selectors:
+                    next_buttons = self.driver.find_elements(By.XPATH, selector)
+                    for button in next_buttons:
+                        if button.is_displayed() and button.is_enabled():
+                            try:
+                                # Scroll to the button first
+                                self.driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", button)
+                                time.sleep(1)
+                                self.driver.execute_script("arguments[0].click();", button)
+                                time.sleep(3)  # Wait for the next page to load
+                                return True
+                            except:
+                                continue
+                
+                return False
+            except Exception as e:
+                self.progress_signal.emit(f"Error navigating to next page: {str(e)}")
+                return False
+        
+    def extract_reviews_alternative(self):
+            """Alternative method to extract reviews when standard methods fail"""
+            self.progress_signal.emit("Trying alternative review extraction methods...")
+            reviews = set()
+            
+            try:
+                # Try more aggressive XPath queries
+                xpath_queries = [
+                    "//div[string-length() > 100]",
+                    "//p[string-length() > 80]",
+                    "//span[string-length() > 100]",
+                    "//article//p",
+                    "//section//p",
+                    "//main//p[string-length() > 50]",
+                    "//*[contains(@class, 'review') or contains(@class, 'comment') or contains(@class, 'feedback')]//p",
+                    "//*[contains(@class, 'review') or contains(@class, 'comment') or contains(@class, 'feedback')]//div[not(.//div)]",
+                    "//*[contains(@id, 'review') or contains(@id, 'comment') or contains(@id, 'feedback')]//p",
+                    "//div[contains(text(), '.') and string-length() > 100 and not(.//div)]"
+                ]
+                
+                for query in xpath_queries:
+                    elements = self.driver.find_elements(By.XPATH, query)
+                    self.progress_signal.emit(f"Found {len(elements)} potential review elements with query: {query}")
+                    
+                    for element in elements:
+                        text = element.text.strip()
+                        if len(text) > 50 and len(text) < 3000:  # Reasonable review length
+                            # Check if it looks like a review (contains periods, not just navigation text)
+                            if "." in text and len(text.split()) > 10:
+                                cleaned_text = ' '.join(text.split())
+                                if not is_non_review_content(cleaned_text):
+                                    reviews.add(cleaned_text)
+                
+                # If still no reviews, try to find any substantial text on the page
+                if len(reviews) < 5:
+                    self.progress_signal.emit("Still not enough reviews, trying to capture any substantial text...")
+                    
+                    # Get all text from the page body
+                    body_text = self.driver.find_element(By.TAG_NAME, "body").text
+                    
+                    # Split by common separators and look for review-like chunks
+                    potential_reviews = []
+                    for separator in ["\n\n", "\n", ". ", "! ", "? "]:
+                        chunks = body_text.split(separator)
+                        for chunk in chunks:
+                            if len(chunk) > 100 and len(chunk) < 2000:
+                                potential_reviews.append(chunk)
+                    
+                    # Process potential reviews
+                    for text in potential_reviews:
+                        cleaned_text = ' '.join(text.split())
+                        if len(cleaned_text) > 50 and "." in cleaned_text and not is_non_review_content(cleaned_text):
+                            reviews.add(cleaned_text)
+                            
+                self.progress_signal.emit(f"Found {len(reviews)} potential reviews from page text")
+                
+            except Exception as e:
+                self.progress_signal.emit(f"Error in alternative extraction: {str(e)}")
+            
+            return reviews
+        
+    def process_reviews(self, reviews):
+        """Process the collected reviews"""
+        self.progress_signal.emit(f"Analyzing {len(reviews)} reviews...")
+        data = []
+        
+        # Check if we have any reviews to process
+        if not reviews:
+            self.error_signal.emit("No valid review data found on the page. Try a different URL or adjust the scraping settings.")
+            if self.driver:
+                self.driver.quit()
+                self.driver = None
+            return
+                
+        batch_size = 10
+        review_list = list(reviews)
+        
+        # Add debug output
+        self.progress_signal.emit(f"Processing {len(review_list)} reviews in batches of {batch_size}")
+        
+        # Process reviews in batches to avoid memory issues
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = []
+            for i in range(0, len(review_list), batch_size):
+                batch = review_list[i:i+batch_size]
+                futures.append(executor.submit(process_review_batch, batch, self.url))
+                
+            # Collect results as they complete
+            for i, future in enumerate(as_completed(futures)):
+                try:
+                    batch_results = future.result()
+                    if batch_results:
+                        data.extend(batch_results)
+                        self.progress_signal.emit(f"Processed batch {i+1}/{len(futures)} - Found {len(batch_results)} valid reviews")
+                    else:
+                        self.progress_signal.emit(f"Batch {i+1}/{len(futures)} contained no valid reviews")
+                except Exception as e:
+                    self.progress_signal.emit(f"Error processing batch {i+1}: {str(e)}")
+        
+        # Add more detailed logging
+        self.progress_signal.emit(f"Processing complete. Found {len(data)} valid reviews out of {len(reviews)} extracted texts")
+        
+        if data:
+            self.finished_signal.emit(data)
+            self.progress_signal.emit(f"Successfully processed {len(data)} reviews")
         else:
-            print("No reviews were scraped. Try adjusting the URL or scraper settings.")
-    except Exception as e:
-        print(f"Error during scraping: {str(e)}")
-    
-    return "Scraping completed"
+            self.error_signal.emit("No valid review data found on the page!")
+        
+        # Clean up
+        if self.driver:
+            self.driver.quit()
+            self.driver = None
+        
+        
