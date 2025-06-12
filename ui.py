@@ -52,6 +52,8 @@ class SentimentAnalysisApp(QMainWindow):
         self.data = []
         self.df = None
         self.scraper_thread = None
+        self.summarizer_thread = None
+        self.progress_dialog = None
         
         # Create main widget and layout
         main_widget = QWidget()
@@ -166,7 +168,7 @@ class SentimentAnalysisApp(QMainWindow):
         self.progress_dialog.setWindowTitle("Scraping")
         self.progress_dialog.setWindowModality(Qt.WindowModal)
         self.progress_dialog.setMinimumDuration(0)
-        self.progress_dialog.canceled.connect(self.cancel_scraping)  # Make sure this connection is here
+        self.progress_dialog.canceled.connect(self.cancel_scraping)
         self.progress_dialog.show()
         
         # Start the scraper thread
@@ -211,10 +213,19 @@ class SentimentAnalysisApp(QMainWindow):
         
         self.status_label.setText(f"Analysis ready: {review_count} reviews found ({positive_count} positive, {negative_count} negative). Removed {removed_count} non-review items.")
         
+        # Close progress dialog
+        if self.progress_dialog:
+            self.progress_dialog.close()
+        
     def handle_scraper_error(self, error_message):
         self.scrape_button.setEnabled(True)
         self.load_button.setEnabled(True)
         self.status_label.setText("Ready")
+        
+        # Close progress dialog
+        if self.progress_dialog:
+            self.progress_dialog.close()
+            
         QMessageBox.critical(self, "Scraping Error", error_message)
         
     def clean_loaded_csv(self):
@@ -343,77 +354,6 @@ class SentimentAnalysisApp(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to export results: {str(e)}")
             
-    def show_sentiment_summary(self):
-        """Show a summary analysis of the sentiment data"""
-        if self.df is None or len(self.df) == 0:
-            QMessageBox.warning(self, "No Data", "No data available for analysis")
-            return
-        
-        # Create a dialog to show the summary
-        summary_dialog = QWidget()
-        summary_dialog.setWindowTitle("Sentiment Analysis Summary")
-        summary_dialog.setGeometry(150, 150, 800, 600)
-        summary_layout = QVBoxLayout(summary_dialog)
-        
-        # Create a text area for the summary
-        summary_text = QTextEdit()
-        summary_text.setReadOnly(True)
-        
-        # Create an image label for the charts
-        image_label = QLabel()
-        image_label.setAlignment(Qt.AlignCenter)
-        image_label.setMinimumHeight(400)
-        
-        # Add widgets to layout
-        summary_layout.addWidget(summary_text)
-        summary_layout.addWidget(image_label)
-        
-        # Show the dialog
-        summary_dialog.show()
-        
-        # Redirect stdout to capture print output
-        old_stdout = sys.stdout
-        new_stdout = io.StringIO()
-        sys.stdout = new_stdout
-        
-        try:
-            # Save the current dataframe to a temporary CSV file
-            temp_csv = "temp_summary.csv"
-            self.df.to_csv(temp_csv, index=False)
-            
-            # Run the analysis
-            from utils import summarize_sentiment_results
-            summary = summarize_sentiment_results(temp_csv)
-            
-            # Get the captured output
-            output = new_stdout.getvalue()
-            summary_text.setText(output)
-            
-            # Display the generated image
-            image_path = os.path.splitext(temp_csv)[0] + '_analysis.png'
-            if os.path.exists(image_path):
-                pixmap = QPixmap(image_path)
-                image_label.setPixmap(pixmap.scaled(
-                    image_label.width(), 
-                    image_label.height(),
-                    Qt.KeepAspectRatio,
-                    Qt.SmoothTransformation
-                ))
-                
-            # Clean up temporary files
-            try:
-                if os.path.exists(temp_csv):
-                    os.remove(temp_csv)
-                if os.path.exists(image_path):
-                    # Keep the image file for now, can be removed later
-                    pass
-            except Exception as cleanup_error:
-                print(f"Warning: Could not clean up temporary files: {cleanup_error}")
-        except Exception as e:
-            summary_text.setText(f"Error generating summary: {str(e)}")
-        finally:
-            # Restore stdout
-            sys.stdout = old_stdout
     def generate_wordcloud(self):
         if self.df is None or len(self.df) == 0:
             QMessageBox.warning(self, "No Data", "No data available for analysis")
@@ -482,8 +422,14 @@ class SentimentAnalysisApp(QMainWindow):
                 return
             reviews = filtered_df["text"].tolist()
         
-        # Combine reviews into a single text
-        combined_text = " ".join(reviews)
+        # Combine reviews into a single text (limit to prevent memory issues)
+        combined_text = " ".join(reviews[:50])  # Limit to first 50 reviews
+        
+        # Check if we have enough text to summarize
+        if len(combined_text.strip()) < 100:
+            QMessageBox.warning(self, "Insufficient Data", 
+                               "Not enough text content to generate a meaningful summary.")
+            return
     
         # Show loading dialog
         self.progress_dialog = QProgressDialog("Generating summary...", "Cancel", 0, 100, self)
@@ -491,10 +437,12 @@ class SentimentAnalysisApp(QMainWindow):
         self.progress_dialog.setWindowModality(Qt.WindowModal)
         self.progress_dialog.setValue(10)
         self.progress_dialog.canceled.connect(self.cancel_summarization)
+        self.progress_dialog.show()
     
         # Calculate appropriate summary length
-        max_length = min(150, len(combined_text.split()) // 2)
-        min_length = min(30, max_length - 10)
+        word_count = len(combined_text.split())
+        max_length = min(150, max(50, word_count // 4))
+        min_length = min(30, max_length - 20)
     
         # Create and start the summarizer thread
         self.summarizer_thread = SummarizerThread(combined_text, max_length, min_length)
@@ -507,26 +455,44 @@ class SentimentAnalysisApp(QMainWindow):
         self.current_summary_choice = choice
 
     def cancel_summarization(self):
-        if hasattr(self, 'summarizer_thread') and self.summarizer_thread.isRunning():
+        if hasattr(self, 'summarizer_thread') and self.summarizer_thread and self.summarizer_thread.isRunning():
             self.summarizer_thread.terminate()
             self.summarizer_thread.wait()
+            self.status_label.setText("Summarization canceled")
             
     def handle_summary_result(self, summary):
+        # Close progress dialog
+        if self.progress_dialog:
+            self.progress_dialog.close()
+            
         # Format summary
         formatted_summary = textwrap.fill(summary, width=80)
     
         # Save summary to file
         filename = f"summary_{self.current_summary_choice.lower()}.txt"
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write(formatted_summary)
-    
-        self.progress_dialog.setValue(100)
+        try:
+            with open(filename, "w", encoding="utf-8") as f:
+                f.write(formatted_summary)
+        except Exception as e:
+            print(f"Warning: Could not save summary to file: {str(e)}")
     
         # Show summary in message box
         QMessageBox.information(self, "Summary Generated", 
                           f"Summary for {self.current_summary_choice.lower()} reviews:\n\n{formatted_summary}\n\n"
                           f"Summary has been saved as '{filename}'")
+        
+        self.status_label.setText("Summary generation completed")
 
     def handle_summary_error(self, error_message):
-        self.progress_dialog.close()
-        QMessageBox.critical(self, "Error", f"Failed to generate summary: {error_message}")
+        # Close progress dialog
+        if self.progress_dialog:
+            self.progress_dialog.close()
+            
+        self.status_label.setText("Summary generation failed")
+        QMessageBox.critical(self, "Summarization Error", 
+                           f"Failed to generate summary: {error_message}\n\n"
+                           "This might be due to:\n"
+                           "• Internet connection issues\n"
+                           "• Model loading problems\n"
+                           "• Insufficient text content\n\n"
+                           "Please try again or check your internet connection.")

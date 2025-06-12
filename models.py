@@ -4,7 +4,6 @@ from PyQt5.QtCore import QThread, pyqtSignal
 from transformers import pipeline
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 import torch
-from PyQt5.QtCore import QThread, pyqtSignal
 
 class ModelLoader:
     _instance = None
@@ -70,12 +69,47 @@ class ModelLoader:
     
     def _initialize_summarizer(self):
         if self._summarizer is None:
-            self._summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
+            try:
+                print("Loading summarization model...")
+                # Use a smaller, more reliable model for summarization
+                self._summarizer = pipeline(
+                    "summarization", 
+                    model="sshleifer/distilbart-cnn-12-6",
+                    max_length=150,
+                    min_length=30,
+                    truncation=True
+                )
+                print("Summarization model loaded successfully")
+            except Exception as e:
+                print(f"Error loading summarization model: {str(e)}")
+                try:
+                    # Fallback to an even smaller model
+                    print("Trying fallback summarization model...")
+                    self._summarizer = pipeline(
+                        "summarization",
+                        model="facebook/bart-large-cnn",
+                        max_length=150,
+                        min_length=30,
+                        truncation=True
+                    )
+                    print("Fallback summarization model loaded successfully")
+                except Exception as e2:
+                    print(f"Error loading fallback model: {str(e2)}")
+                    self._summarizer = None
         return self._summarizer
     
     def _initialize_qa(self):
         if self._qa_pipeline is None:
-            self._qa_pipeline = pipeline("question-answering", model="distilbert-base-cased-distilled-squad")
+            try:
+                print("Loading Q&A model...")
+                self._qa_pipeline = pipeline(
+                    "question-answering", 
+                    model="distilbert-base-cased-distilled-squad"
+                )
+                print("Q&A model loaded successfully")
+            except Exception as e:
+                print(f"Error loading Q&A model: {str(e)}")
+                self._qa_pipeline = None
         return self._qa_pipeline
     
     @property
@@ -110,17 +144,53 @@ class SummarizerThread(QThread):
             self.progress_signal.emit(30)
             summarizer = model_loader.summarizer
             
-            # Generate summary
+            if summarizer is None:
+                self.error_signal.emit("Summarization model could not be loaded. Please check your internet connection and try again.")
+                return
+            
+            # Prepare text for summarization
             self.progress_signal.emit(50)
-            summary = summarizer(self.text, 
-                               max_length=self.max_length, 
-                               min_length=self.min_length, 
-                               do_sample=False)[0]['summary_text']
+            
+            # Limit text length to avoid memory issues
+            max_input_length = 1024  # Adjust based on model capacity
+            if len(self.text) > max_input_length:
+                # Take the first part of the text
+                self.text = self.text[:max_input_length]
+                # Try to end at a sentence boundary
+                last_period = self.text.rfind('.')
+                if last_period > max_input_length // 2:
+                    self.text = self.text[:last_period + 1]
+            
+            # Ensure minimum text length
+            if len(self.text.strip()) < 50:
+                self.error_signal.emit("Text is too short to summarize effectively.")
+                return
+            
+            # Generate summary with error handling
+            try:
+                summary_result = summarizer(
+                    self.text, 
+                    max_length=min(self.max_length, len(self.text.split()) // 2),
+                    min_length=min(self.min_length, 20),
+                    do_sample=False,
+                    truncation=True
+                )
+                
+                if summary_result and len(summary_result) > 0:
+                    summary = summary_result[0]['summary_text']
+                else:
+                    self.error_signal.emit("No summary could be generated from the provided text.")
+                    return
+                    
+            except Exception as model_error:
+                self.error_signal.emit(f"Error during summarization: {str(model_error)}")
+                return
             
             self.progress_signal.emit(90)
             self.finished_signal.emit(summary)
+            
         except Exception as e:
-            self.error_signal.emit(str(e))
+            self.error_signal.emit(f"Unexpected error during summarization: {str(e)}")
 
 class QAThread(QThread):
     finished_signal = pyqtSignal(dict)
@@ -138,6 +208,10 @@ class QAThread(QThread):
             self.progress_signal.emit(30)
             qa_pipeline = model_loader.qa_pipeline
             
+            if qa_pipeline is None:
+                self.error_signal.emit("Q&A model could not be loaded. Please check your internet connection and try again.")
+                return
+            
             # Get answer
             self.progress_signal.emit(50)
             answer = qa_pipeline(question=self.question, context=self.context)
@@ -145,4 +219,4 @@ class QAThread(QThread):
             self.progress_signal.emit(90)
             self.finished_signal.emit(answer)
         except Exception as e:
-            self.error_signal.emit(str(e))
+            self.error_signal.emit(f"Error during Q&A processing: {str(e)}")
