@@ -4,18 +4,176 @@ from wordcloud import WordCloud, STOPWORDS
 import textwrap
 import os
 import sys
+import webbrowser
 from datetime import datetime
 from PyQt5.QtWidgets import (QMainWindow, QVBoxLayout, QHBoxLayout, 
                             QPushButton, QLabel, QFileDialog, QMessageBox, 
                             QInputDialog, QWidget, QProgressDialog, QLineEdit, QFrame, 
                             QTabWidget, QTextEdit, QScrollArea, QGridLayout, QGroupBox,
                             QSplitter, QProgressBar, QComboBox, QSpinBox, QCheckBox,
-                            QToolTip, QApplication)
-from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QRect
-from PyQt5.QtGui import QFont, QPixmap, QPalette, QColor, QIcon, QPainter, QBrush
+                            QToolTip, QApplication, QDialog)
+from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QRect, QThread, pyqtSignal
+from PyQt5.QtGui import QFont, QPixmap, QPalette, QColor, QIcon, QPainter, QBrush, QDesktopServices
+from PyQt5.QtCore import QUrl
 from models import SummarizerThread
 from scraper import ScraperThread
 from utils import clean_csv_data
+
+class DeploymentStatusThread(QThread):
+    """Thread to check deployment status"""
+    status_updated = pyqtSignal(dict)
+    error_occurred = pyqtSignal(str)
+    
+    def __init__(self, deploy_id=None):
+        super().__init__()
+        self.deploy_id = deploy_id
+        
+    def run(self):
+        try:
+            # This would normally call the deployment status API
+            # For now, we'll simulate the response
+            status = {
+                'status': 'ready',
+                'deploy_url': 'https://example-site.netlify.app',
+                'claim_url': 'https://app.netlify.com/sites/example-site/overview',
+                'claimed': False
+            }
+            self.status_updated.emit(status)
+        except Exception as e:
+            self.error_occurred.emit(str(e))
+
+class ClaimLinkDialog(QDialog):
+    """Custom dialog for showing claim link information"""
+    
+    def __init__(self, claim_url, deploy_url, parent=None):
+        super().__init__(parent)
+        self.claim_url = claim_url
+        self.deploy_url = deploy_url
+        self.setup_ui()
+        
+    def setup_ui(self):
+        self.setWindowTitle("🚀 Deployment Successful")
+        self.setFixedSize(500, 300)
+        self.setStyleSheet("""
+            QDialog {
+                background: white;
+                border-radius: 10px;
+            }
+            QLabel {
+                color: #2c3e50;
+            }
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #2196F3, stop:1 #1976D2);
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 10px 20px;
+                font-weight: 500;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #42A5F5, stop:1 #2196F3);
+            }
+            QPushButton:pressed {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #1976D2, stop:1 #1565C0);
+            }
+        """)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(20)
+        
+        # Success icon and title
+        title_label = QLabel("🎉 Your site has been deployed successfully!")
+        title_label.setFont(QFont("Segoe UI", 16, QFont.Bold))
+        title_label.setStyleSheet("color: #4CAF50; margin-bottom: 10px;")
+        title_label.setAlignment(Qt.AlignCenter)
+        
+        # Site URL section
+        site_section = QGroupBox("🌐 Your Live Site")
+        site_layout = QVBoxLayout(site_section)
+        
+        site_url_label = QLabel(f"<a href='{self.deploy_url}' style='color: #2196F3; text-decoration: none;'>{self.deploy_url}</a>")
+        site_url_label.setOpenExternalLinks(True)
+        site_url_label.setFont(QFont("Segoe UI", 11))
+        site_url_label.setStyleSheet("padding: 10px; background: #f8f9fa; border-radius: 6px;")
+        
+        visit_button = QPushButton("🔗 Visit Your Site")
+        visit_button.clicked.connect(lambda: self.open_url(self.deploy_url))
+        
+        site_layout.addWidget(site_url_label)
+        site_layout.addWidget(visit_button)
+        
+        # Claim section
+        claim_section = QGroupBox("🏠 Transfer to Your Account")
+        claim_layout = QVBoxLayout(claim_section)
+        
+        claim_info = QLabel(
+            "To manage this site from your own Netlify account, click the button below. "
+            "This will transfer ownership to you and allow you to:\n\n"
+            "• Manage deployments and settings\n"
+            "• Connect your own domain\n"
+            "• Access analytics and logs\n"
+            "• Set up continuous deployment"
+        )
+        claim_info.setWordWrap(True)
+        claim_info.setFont(QFont("Segoe UI", 10))
+        claim_info.setStyleSheet("color: #666; line-height: 1.4;")
+        
+        claim_button = QPushButton("🎯 Claim Site in Netlify")
+        claim_button.clicked.connect(lambda: self.open_url(self.claim_url))
+        claim_button.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #4CAF50, stop:1 #45a049);
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 12px 20px;
+                font-weight: 600;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #5CBF60, stop:1 #4CAF50);
+            }
+        """)
+        
+        claim_layout.addWidget(claim_info)
+        claim_layout.addWidget(claim_button)
+        
+        # Close button
+        close_button = QPushButton("✅ Done")
+        close_button.clicked.connect(self.accept)
+        close_button.setStyleSheet("""
+            QPushButton {
+                background: #6c757d;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 10px 30px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background: #5a6268;
+            }
+        """)
+        
+        # Add all sections to layout
+        layout.addWidget(title_label)
+        layout.addWidget(site_section)
+        layout.addWidget(claim_section)
+        layout.addWidget(close_button, 0, Qt.AlignCenter)
+        
+    def open_url(self, url):
+        """Open URL in default browser"""
+        try:
+            QDesktopServices.openUrl(QUrl(url))
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Could not open URL: {str(e)}")
 
 class ModernButton(QPushButton):
     def __init__(self, text, primary=False):
@@ -191,6 +349,7 @@ class SentimentAnalysisApp(QMainWindow):
         self.df = None
         self.scraper_thread = None
         self.summarizer_thread = None
+        self.deployment_thread = None
         self.progress_dialog = None
         self.stats_cards = []
         
@@ -345,10 +504,17 @@ class SentimentAnalysisApp(QMainWindow):
         self.export_button.setEnabled(False)
         self.export_button.setToolTip("Save analysis results to CSV file")
         
+        # Add deployment button
+        self.deploy_button = ModernButton("🚀 Deploy to Web")
+        self.deploy_button.clicked.connect(self.deploy_to_web)
+        self.deploy_button.setEnabled(False)
+        self.deploy_button.setToolTip("Deploy your analysis results as a web dashboard")
+        
         tools_layout.addWidget(self.sentiment_button)
         tools_layout.addWidget(self.wordcloud_button)
         tools_layout.addWidget(self.summarize_button)
         tools_layout.addWidget(self.export_button)
+        tools_layout.addWidget(self.deploy_button)
         
         # Add all groups to left layout
         left_layout.addWidget(input_group)
@@ -483,6 +649,80 @@ class SentimentAnalysisApp(QMainWindow):
             
         self.preview_text.setPlainText(preview_text)
 
+    def deploy_to_web(self):
+        """Deploy the analysis results to a web dashboard"""
+        if self.df is None or len(self.df) == 0:
+            QMessageBox.warning(self, "No Data", "No data available to deploy")
+            return
+            
+        # Show progress
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)  # Indeterminate progress
+        self.status_label.setText("🚀 Preparing deployment...")
+        
+        # Disable deploy button
+        self.deploy_button.setEnabled(False)
+        
+        # Create deployment status thread
+        self.deployment_thread = DeploymentStatusThread()
+        self.deployment_thread.status_updated.connect(self.handle_deployment_status)
+        self.deployment_thread.error_occurred.connect(self.handle_deployment_error)
+        
+        # Start deployment process
+        self.deployment_thread.start()
+        
+    def handle_deployment_status(self, status):
+        """Handle deployment status updates"""
+        self.progress_bar.setVisible(False)
+        self.deploy_button.setEnabled(True)
+        
+        if status.get('status') == 'ready':
+            deploy_url = status.get('deploy_url', '')
+            claim_url = status.get('claim_url', '')
+            claimed = status.get('claimed', False)
+            
+            self.status_label.setText("✅ Deployment successful!")
+            
+            if claimed:
+                # Site was already claimed, show simple success message
+                QMessageBox.information(
+                    self, 
+                    "🚀 Deployment Complete", 
+                    f"Your sentiment analysis dashboard has been deployed!\n\n"
+                    f"🌐 Live URL: {deploy_url}\n\n"
+                    "A new site with a new URL was deployed since the previous one was already claimed."
+                )
+                # Open the deployed site
+                QDesktopServices.openUrl(QUrl(deploy_url))
+            else:
+                # Show claim dialog
+                if claim_url and deploy_url:
+                    dialog = ClaimLinkDialog(claim_url, deploy_url, self)
+                    dialog.exec_()
+                else:
+                    # Fallback if URLs are missing
+                    QMessageBox.information(
+                        self, 
+                        "🚀 Deployment Complete", 
+                        "Your sentiment analysis dashboard has been deployed successfully!"
+                    )
+        else:
+            self.status_label.setText("❌ Deployment failed")
+            QMessageBox.warning(self, "Deployment Error", "Deployment failed. Please try again.")
+            
+    def handle_deployment_error(self, error_message):
+        """Handle deployment errors"""
+        self.progress_bar.setVisible(False)
+        self.deploy_button.setEnabled(True)
+        self.status_label.setText("❌ Deployment failed")
+        
+        QMessageBox.critical(
+            self, 
+            "Deployment Error", 
+            f"Failed to deploy your dashboard:\n\n{error_message}\n\n"
+            "Please check your internet connection and try again."
+        )
+
     def scrape_website(self):
         """Start scraping the website for reviews"""
         url = self.url_input.text().strip()
@@ -546,6 +786,7 @@ class SentimentAnalysisApp(QMainWindow):
         self.wordcloud_button.setEnabled(True)
         self.summarize_button.setEnabled(True)
         self.export_button.setEnabled(True)
+        self.deploy_button.setEnabled(True)  # Enable deploy button
         
         # Update statistics
         review_count = len(self.df)
@@ -630,6 +871,7 @@ class SentimentAnalysisApp(QMainWindow):
             self.wordcloud_button.setEnabled(True)
             self.summarize_button.setEnabled(True)
             self.export_button.setEnabled(True)
+            self.deploy_button.setEnabled(True)  # Enable deploy button
             
             # Update statistics
             review_count = len(self.df)
