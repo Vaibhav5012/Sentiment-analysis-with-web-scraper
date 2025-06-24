@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🔍 Sentiment Analysis Dashboard</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔍</text></svg>">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="dashboard-container">
+        <!-- Header -->
+        <header class="dashboard-header">
+            <div class="header-content">
+                <div class="header-left">
+                    <h1 class="dashboard-title">
+                        <span class="title-icon">🔍</span>
+                        Sentiment Analysis Dashboard
+                    </h1>
+                    <p class="dashboard-subtitle">AI-powered customer sentiment insights</p>
+                </div>
+                <div class="header-right">
+                    <div class="last-updated">
+                        <span class="update-label">Last Updated:</span>
+                        <span class="update-time" id="lastUpdated">Loading...</span>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Stats Overview -->
+        <section class="stats-section">
+            <div class="stats-grid">
+                <div class="stat-card positive">
+                    <div class="stat-icon">😊</div>
+                    <div class="stat-content">
+                        <div class="stat-value" id="positiveCount">0</div>
+                        <div class="stat-label">Positive Reviews</div>
+                        <div class="stat-percentage" id="positivePercentage">0%</div>
+                    </div>
+                </div>
+                <div class="stat-card negative">
+                    <div class="stat-icon">😞</div>
+                    <div class="stat-content">
+                        <div class="stat-value" id="negativeCount">0</div>
+                        <div class="stat-label">Negative Reviews</div>
+                        <div class="stat-percentage" id="negativePercentage">0%</div>
+                    </div>
+                </div>
+                <div class="stat-card neutral">
+                    <div class="stat-icon">😐</div>
+                    <div class="stat-content">
+                        <div class="stat-value" id="neutralCount">0</div>
+                        <div class="stat-label">Neutral Reviews</div>
+                        <div class="stat-percentage" id="neutralPercentage">0%</div>
+                    </div>
+                </div>
+                <div class="stat-card total">
+                    <div class="stat-icon">📊</div>
+                    <div class="stat-content">
+                        <div class="stat-value" id="totalCount">0</div>
+                        <div class="stat-label">Total Reviews</div>
+                        <div class="stat-percentage" id="avgConfidence">0% avg confidence</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Charts Section -->
+        <section class="charts-section">
+            <div class="charts-grid">
+                <div class="chart-container">
+                    <div class="chart-header">
+                        <h3 class="chart-title">📈 Sentiment Distribution</h3>
+                        <div class="chart-controls">
+                            <button class="chart-btn active" data-chart="pie">Pie Chart</button>
+                            <button class="chart-btn" data-chart="bar">Bar Chart</button>
+                        </div>
+                    </div>
+                    <div class="chart-wrapper">
+                        <canvas id="sentimentChart"></canvas>
+                    </div>
+                </div>
+                
+                <div class="chart-container">
+                    <div class="chart-header">
+                        <h3 class="chart-title">⏰ Sentiment Over Time</h3>
+                    </div>
+                    <div class="chart-wrapper">
+                        <canvas id="timelineChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Reviews Section -->
+        <section class="reviews-section">
+            <div class="reviews-header">
+                <h3 class="section-title">💬 Recent Reviews</h3>
+                <div class="reviews-filters">
+                    <select id="sentimentFilter" class="filter-select">
+                        <option value="all">All Sentiments</option>
+                        <option value="POSITIVE">Positive Only</option>
+                        <option value="NEGATIVE">Negative Only</option>
+                        <option value="NEUTRAL">Neutral Only</option>
+                    </select>
+                    <select id="sortOrder" class="filter-select">
+                        <option value="newest">Newest First</option>
+                        <option value="oldest">Oldest First</option>
+                        <option value="confidence">Highest Confidence</option>
+                    </select>
+                </div>
+            </div>
+            <div class="reviews-container" id="reviewsContainer">
+                <div class="loading-state">
+                    <div class="loading-spinner"></div>
+                    <p>Loading reviews...</p>
+                </div>
+            </div>
+            <div class="reviews-pagination">
+                <button id="loadMoreBtn" class="load-more-btn">Load More Reviews</button>
+            </div>
+        </section>
+
+        <!-- Footer -->
+        <footer class="dashboard-footer">
+            <div class="footer-content">
+                <p>&copy; 2024 Sentiment Analysis Dashboard. Powered by AI.</p>
+                <div class="footer-links">
+                    <a href="#" class="footer-link">About</a>
+                    <a href="#" class="footer-link">Privacy</a>
+                    <a href="#" class="footer-link">Terms</a>
+                </div>
+            </div>
+        </footer>
+    </div>
+
+    <script src="dashboard.js"></script>
+</body>
+</html>
