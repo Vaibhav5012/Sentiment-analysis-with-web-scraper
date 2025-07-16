@@ -510,9 +510,6 @@ class SentimentAnalysisApp(QMainWindow):
         self.deploy_button.setEnabled(False)
         self.deploy_button.setToolTip("Deploy your analysis results as a web dashboard")
         
-        # Add back the scraper functionality
-        self.scraper_thread = None
-        
         tools_layout.addWidget(self.sentiment_button)
         tools_layout.addWidget(self.wordcloud_button)
         tools_layout.addWidget(self.summarize_button)
@@ -745,7 +742,6 @@ class SentimentAnalysisApp(QMainWindow):
         self.load_button.setEnabled(False)
         
         # Create and configure the scraper thread
-        from scraper import ScraperThread
         self.scraper_thread = ScraperThread(url)
         
         # Connect signals properly
@@ -777,7 +773,6 @@ class SentimentAnalysisApp(QMainWindow):
         self.status_label.setText("🧹 Cleaning scraped data...")
         
         # Automatically clean the data to remove non-review content
-        from utils import clean_csv_data
         cleaned_df, removed_count = clean_csv_data(self.df)
         
         # Update the dataframe and data with cleaned content
